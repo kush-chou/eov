@@ -28,7 +28,7 @@ impl DiagnosticQueryRequest {
 }
 
 /// Diagnostic Query streaming event relayed to Webview UI matching SPEC-00-MASTER.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "event", content = "data")]
 pub enum DiagnosticQueryEvent {
     TokenDelta { text: String },
@@ -38,7 +38,7 @@ pub enum DiagnosticQueryEvent {
 }
 
 /// Streaming SSE event received from cloud CDS gateway matching SPEC-05-INTELLIGENCE.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", content = "data")]
 pub enum DiagnosticStreamEvent {
     #[serde(rename = "token")]

@@ -382,6 +382,7 @@ document.getElementById("btnResetWsi").addEventListener("click", () => {
   state.wsi.zoom = 1.0;
   state.wsi.originUm = { x: 5000.0, y: 5000.0 };
   state.wsi.activeRoi = null;
+  captureRoiToHud();
   wsiZoomDisplay.textContent = "40.0× (0.25 µm/px)";
 });
 
@@ -524,6 +525,7 @@ function toggleHud(forceState) {
   state.hud.visible = forceState !== undefined ? forceState : !state.hud.visible;
   hudOverlay.style.display = state.hud.visible ? "flex" : "none";
   if (state.hud.visible) {
+    captureRoiToHud();
     hudQueryInput.focus();
   }
 }
@@ -533,19 +535,46 @@ function captureRoiToHud() {
   const pCtx = patchCanvas.getContext("2d");
   pCtx.clearRect(0, 0, 256, 256);
 
-  // Draw scaled preview of selected ROI patch
-  pCtx.drawImage(wsiCanvas, 0, 0, 256, 256);
-
   const roi = state.wsi.activeRoi;
   if (roi) {
+    const zoom = state.wsi.zoom;
+    const mppX = state.wsi.mppX;
+    const mppY = state.wsi.mppY;
+    const originUm = state.wsi.originUm;
+
+    // Convert slide micron ROI to current screen canvas coordinates
+    const sx = (roi.origin.x_um - originUm.x) * (zoom / mppX);
+    const sy = (roi.origin.y_um - originUm.y) * (zoom / mppY);
+    const sw = (roi.width_um * zoom) / mppX;
+    const sh = (roi.height_um * zoom) / mppY;
+
+    if (sw > 0 && sh > 0 && sx < wsiCanvas.width && sy < wsiCanvas.height && sx + sw > 0 && sy + sh > 0) {
+      const srcX = Math.max(0, sx);
+      const srcY = Math.max(0, sy);
+      const srcW = Math.min(sw, wsiCanvas.width - srcX);
+      const srcH = Math.min(sh, wsiCanvas.height - srcY);
+      pCtx.drawImage(wsiCanvas, srcX, srcY, srcW, srcH, 0, 0, 256, 256);
+    } else {
+      pCtx.drawImage(wsiCanvas, 0, 0, 256, 256);
+    }
+
     hudPatchMeta.textContent = `ROI: ${roi.width_um.toFixed(0)}×${roi.height_um.toFixed(0)} µm | Optical Patch ≤ 1024×1024 px | Zero PHI`;
+  } else {
+    pCtx.fillStyle = "#111827";
+    pCtx.fillRect(0, 0, 256, 256);
+    pCtx.fillStyle = "#64748b";
+    pCtx.font = "11px Inter, system-ui, sans-serif";
+    pCtx.textAlign = "center";
+    pCtx.fillText("No ROI Box Selected", 128, 120);
+    pCtx.fillText("(Prompt-Only Mode)", 128, 138);
+    hudPatchMeta.textContent = "No ROI Selected | Text & Pinned Evidence Mode | Zero PHI";
   }
 }
 
 hudTriggerBtn.addEventListener("click", () => toggleHud());
 hudCloseBtn.addEventListener("click", () => toggleHud(false));
 
-// Global Shortcut Listener (Option + Space / Alt + Space)
+// Global Shortcut & Keyboard Navigation (Option + Space / Alt + Space / Esc)
 window.addEventListener("keydown", (e) => {
   // Option + Space (macOS) / Alt + Space (Windows)
   if (e.altKey && e.code === "Space") {
@@ -557,10 +586,15 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     togglePalette();
   }
-  // Escape closes modals
+  // Escape closes modals or aborts active stream per SPEC-05 section 6.3
   if (e.key === "Escape") {
-    if (state.hud.visible) toggleHud(false);
-    if (paletteBackdrop.style.display === "flex") togglePalette(false);
+    if (isStreaming) {
+      cancelDiagnosticStream();
+    } else if (paletteBackdrop.style.display === "flex") {
+      togglePalette(false);
+    } else if (state.hud.visible) {
+      toggleHud(false);
+    }
   }
 });
 
@@ -571,6 +605,40 @@ document.querySelectorAll(".chip-preset").forEach((btn) => {
   });
 });
 
+// ==========================================
+// 3. BIOMEDICAL LITERATURE & GUIDANCE READER
+// ==========================================
+
+const readerDocSelect = document.getElementById("readerDocSelect");
+const readerSearchInput = document.getElementById("readerSearchInput");
+
+if (readerDocSelect) {
+  readerDocSelect.addEventListener("change", (e) => {
+    const docId = e.target.value;
+    document.querySelectorAll(".literature-doc").forEach((doc) => {
+      doc.style.display = doc.id === `doc-${docId}` ? "block" : "none";
+    });
+  });
+}
+
+if (readerSearchInput) {
+  readerSearchInput.addEventListener("input", (e) => {
+    const filter = e.target.value.toLowerCase().trim();
+    const activeDoc = document.querySelector(".literature-doc[style*='display: block']") || document.querySelector(".literature-doc");
+    if (!activeDoc) return;
+
+    const sections = activeDoc.querySelectorAll(".evidence-anchor");
+    sections.forEach((sec) => {
+      if (!filter) {
+        sec.style.display = "block";
+      } else {
+        const text = sec.textContent.toLowerCase();
+        sec.style.display = text.includes(filter) ? "block" : "none";
+      }
+    });
+  });
+}
+
 // Injected Literature Reader Bridge matching SPEC-04-READER
 window.__laminaReaderBridge = {
   getSelectedExcerpt: function () {
@@ -578,30 +646,110 @@ window.__laminaReaderBridge = {
     if (!selection || selection.rangeCount === 0 || !selection.toString().trim()) {
       return null;
     }
+    const text = selection.toString().trim();
+    const activeDoc = document.querySelector(".literature-doc[style*='display: block']") || document.querySelector(".literature-doc");
+    const title = activeDoc ? (activeDoc.querySelector(".paper-title")?.textContent || document.title) : document.title;
+    const meta = activeDoc ? (activeDoc.querySelector(".paper-meta")?.textContent || "") : "";
+    const pmidMatch = meta.match(/PMID:\s*(\d+)/i);
+
     return {
-      text: selection.toString().trim(),
+      text,
+      source_url: window.location.href,
+      document_title: title,
+      pmid_or_doi: pmidMatch ? pmidMatch[1] : null,
       url: window.location.href,
-      title: document.title,
+      title: title,
     };
   },
-  scrollToAnchor: function (anchorText) {
-    const iterator = document.createNodeIterator(document.body, NodeFilter.SHOW_TEXT);
-    let node;
-    while ((node = iterator.nextNode())) {
-      if (node.nodeValue.includes(anchorText)) {
-        node.parentElement.scrollIntoView({ behavior: "smooth", block: "center" });
-        break;
+  scrollToAnchor: function (anchorIdOrText) {
+    if (!anchorIdOrText || !anchorIdOrText.toString().trim()) return;
+    const query = anchorIdOrText.toString().trim();
+
+    // 1. Try finding by ID
+    let targetEl = document.getElementById(query);
+
+    // 2. If not found by ID, search text in readerContent
+    if (!targetEl) {
+      const readerRoot = document.getElementById("readerContent");
+      if (readerRoot) {
+        const iterator = document.createNodeIterator(readerRoot, NodeFilter.SHOW_TEXT);
+        let node;
+        while ((node = iterator.nextNode())) {
+          if (node.nodeValue.toLowerCase().includes(query.toLowerCase())) {
+            targetEl = node.parentElement;
+            break;
+          }
+        }
       }
+    }
+
+    if (targetEl) {
+      // Find parent article and ensure it is visible
+      const parentArticle = targetEl.closest(".literature-doc");
+      if (parentArticle && readerDocSelect) {
+        const articleId = parentArticle.id.replace("doc-", "");
+        readerDocSelect.value = articleId;
+        document.querySelectorAll(".literature-doc").forEach((doc) => {
+          doc.style.display = doc.id === parentArticle.id ? "block" : "none";
+        });
+      }
+
+      // Unhide if filtered out
+      if (targetEl.style.display === "none") {
+        targetEl.style.display = "block";
+      }
+
+      // Smooth scroll
+      targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+
+      // Highlight pulse
+      targetEl.classList.add("highlight");
+      setTimeout(() => {
+        targetEl.classList.remove("highlight");
+      }, 2500);
     }
   },
 };
 
+// Sync selection changes to backend via mouseup and selectionchange
+async function syncReaderSelection() {
+  if (!isTauri) return;
+  const selection = window.getSelection();
+  const readerRoot = document.getElementById("readerContent");
+  if (selection && selection.rangeCount > 0 && selection.toString().trim()) {
+    if (readerRoot && readerRoot.contains(selection.anchorNode)) {
+      const excerpt = window.__laminaReaderBridge.getSelectedExcerpt();
+      if (excerpt) {
+        try {
+          await invoke("reader_set_selection", { excerpt });
+        } catch (e) {
+          console.warn("Failed to sync selection to backend:", e);
+        }
+      }
+    }
+  }
+}
+
+document.getElementById("readerContent")?.addEventListener("mouseup", syncReaderSelection);
+document.addEventListener("selectionchange", syncReaderSelection);
+
 // Evidence Extraction via Reader Bridge
-btnExtractSelection.addEventListener("click", () => {
-  const excerpt = window.__laminaReaderBridge.getSelectedExcerpt();
+btnExtractSelection.addEventListener("click", async () => {
+  let excerpt = window.__laminaReaderBridge.getSelectedExcerpt();
+  if (!excerpt && isTauri) {
+    try {
+      excerpt = await invoke("reader_extract_selection");
+    } catch (_) {}
+  }
+
   if (excerpt && excerpt.text) {
-    state.hud.pinnedExcerpt = excerpt.text;
+    state.hud.pinnedExcerpt = excerpt;
     excerptText.textContent = excerpt.text;
+    const excerptSource = document.getElementById("excerptSource");
+    if (excerptSource) {
+      const ref = excerpt.pmid_or_doi ? `PMID: ${excerpt.pmid_or_doi}` : excerpt.document_title;
+      excerptSource.textContent = `Source: ${excerpt.document_title || "Literature Reference"} (${ref})`;
+    }
     hudPinnedExcerpt.style.display = "block";
     toggleHud(true);
   } else {
@@ -612,34 +760,520 @@ btnExtractSelection.addEventListener("click", () => {
 btnClearExcerpt.addEventListener("click", () => {
   state.hud.pinnedExcerpt = null;
   hudPinnedExcerpt.style.display = "none";
-});
-
-document.getElementById("hudSubmitBtn").addEventListener("click", async () => {
-  const query = hudQueryInput.value.trim();
-  if (!query) {
-    alert("Please enter a clinical prompt.");
-    return;
-  }
-
-  // Optical Allow-List validation before submission
-  const req = {
-    query_text: query,
-    patch_png_base64: hudPatchCanvas.toDataURL("image/png").split(",")[1],
-    magnification_mpp: state.wsi.mppX,
-    previous_interaction_id: null,
-  };
-
-  try {
-    await invoke("submit_diagnostic_query", { request: req });
-    alert("Diagnostic Query stream initiated with verified optical allow-list boundary.");
-    toggleHud(false);
-  } catch (err) {
-    alert(`Query failed: ${err}`);
+  if (isTauri) {
+    invoke("reader_clear_selection").catch(console.warn);
   }
 });
 
 // ==========================================
-// 4. COMMAND PALETTE MODAL
+// 4. REAL-TIME STREAMING CDS SUBSYSTEM
+// ==========================================
+
+let isStreaming = false;
+let currentInteractionId = null;
+let lastInteractionId = null;
+let accumulatedMarkdown = "";
+
+const hudQueryForm = document.getElementById("hudQueryForm");
+const hudStreamPanel = document.getElementById("hudStreamPanel");
+const hudToolBanner = document.getElementById("hudToolBanner");
+const toolBannerText = document.getElementById("toolBannerText");
+const guardrailStatus = document.getElementById("guardrailStatus");
+const guardrailText = document.getElementById("guardrailText");
+const hudStreamOutput = document.getElementById("hudStreamOutput");
+const streamContent = document.getElementById("streamContent");
+const streamCursor = document.getElementById("streamCursor");
+const hudCitationsSection = document.getElementById("hudCitationsSection");
+const hudCitationChips = document.getElementById("hudCitationChips");
+const hudFollowupForm = document.getElementById("hudFollowupForm");
+const hudFollowupInput = document.getElementById("hudFollowupInput");
+const hudFollowupBtn = document.getElementById("hudFollowupBtn");
+
+const hudSubmitBtn = document.getElementById("hudSubmitBtn");
+const hudCancelBtn = document.getElementById("hudCancelBtn");
+const hudResetBtn = document.getElementById("hudResetBtn");
+const hudCopyBtn = document.getElementById("hudCopyBtn");
+
+// Markdown Formatter for Structured Clinical Markdown
+function formatMarkdownToHtml(md) {
+  if (!md) return "";
+
+  const rawLines = md.split("\n");
+  const blocks = [];
+  let currentList = null; // { type: 'ul' | 'ol', items: [] }
+  let currentTable = null; // { headers: [], rows: [] }
+  let currentParagraph = [];
+
+  function flushParagraph() {
+    if (currentParagraph.length > 0) {
+      const text = currentParagraph.join("<br/>");
+      blocks.push(`<p>${formatInline(text)}</p>`);
+      currentParagraph = [];
+    }
+  }
+
+  function flushList() {
+    if (currentList) {
+      const tag = currentList.type;
+      const itemsHtml = currentList.items.map(it => `<li>${formatInline(it)}</li>`).join("");
+      blocks.push(`<${tag}>${itemsHtml}</${tag}>`);
+      currentList = null;
+    }
+  }
+
+  function flushTable() {
+    if (currentTable) {
+      let tHtml = "<table>";
+      if (currentTable.headers.length > 0) {
+        tHtml += "<thead><tr>" + currentTable.headers.map(h => `<th>${formatInline(h)}</th>`).join("") + "</tr></thead>";
+      }
+      if (currentTable.rows.length > 0) {
+        tHtml += "<tbody>" + currentTable.rows.map(r => "<tr>" + r.map(c => `<td>${formatInline(c)}</td>`).join("") + "</tr>").join("") + "</tbody>";
+      }
+      tHtml += "</table>";
+      blocks.push(tHtml);
+      currentTable = null;
+    }
+  }
+
+  function flushAll() {
+    flushParagraph();
+    flushList();
+    flushTable();
+  }
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i];
+    const trimmed = line.trim();
+
+    if (trimmed === "") {
+      flushAll();
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed) || /^\*\*\*+$/.test(trimmed)) {
+      flushAll();
+      blocks.push("<hr class=\"stream-divider\" />");
+      continue;
+    }
+
+    if (trimmed.startsWith("|") && trimmed.endsWith("|")) {
+      flushParagraph();
+      flushList();
+      if (trimmed.includes("---")) {
+        continue;
+      }
+      const cells = trimmed.split("|").slice(1, -1).map(c => c.trim());
+      if (!currentTable) {
+        currentTable = { headers: cells, rows: [] };
+      } else {
+        currentTable.rows.push(cells);
+      }
+      continue;
+    } else {
+      flushTable();
+    }
+
+    if (trimmed.startsWith("#")) {
+      flushAll();
+      const match = trimmed.match(/^(#{1,4})\s+(.*)$/);
+      if (match) {
+        const level = match[1].length;
+        blocks.push(`<h${level}>${formatInline(match[2])}</h${level}>`);
+        continue;
+      }
+    }
+
+    const olMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+    if (olMatch) {
+      flushParagraph();
+      flushTable();
+      if (!currentList || currentList.type !== "ol") {
+        flushList();
+        currentList = { type: "ol", items: [] };
+      }
+      currentList.items.push(olMatch[2]);
+      continue;
+    }
+
+    const ulMatch = trimmed.match(/^[-*]\s+(.*)$/);
+    if (ulMatch) {
+      flushParagraph();
+      flushTable();
+      if (!currentList || currentList.type !== "ul") {
+        flushList();
+        currentList = { type: "ul", items: [] };
+      }
+      currentList.items.push(ulMatch[1]);
+      continue;
+    }
+
+    flushList();
+    currentParagraph.push(line);
+  }
+
+  flushAll();
+  return blocks.join("\n");
+}
+
+function formatInline(text) {
+  let str = text;
+  str = str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  str = str.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  str = str.replace(/(^|[^*])\*([^*]+)\*([^*]|$)/g, "$1<em>$2</em>$3");
+  str = str.replace(/`([^`]+)`/g, "<code>$1</code>");
+  str = str.replace(/\[(\d+(?:,\s*\d+)*)\]/g, (match, nums) => {
+    const list = nums.split(",").map(n => n.trim());
+    return "[" + list.map(n => `<span class="inline-citation" data-citation="${n}">${n}</span>`).join(", ") + "]";
+  });
+  return str;
+}
+
+// Delegated click on stream citations to deep link into reader
+streamContent.addEventListener("click", (e) => {
+  const citEl = e.target.closest(".inline-citation");
+  if (citEl && citEl.dataset.citation) {
+    const idx = parseInt(citEl.dataset.citation, 10);
+    const anchorMap = {
+      1: "who-ihc-workup",
+      2: "travis-p40-specificity",
+      3: "molecular-reflex-panel",
+    };
+    const anchor = anchorMap[idx];
+    if (anchor) {
+      const activeLayout = document.querySelector(".tab-btn.active")?.dataset.layout;
+      if (activeLayout === "wsi-focus" || activeLayout === "dicom-focus") {
+        document.querySelector('.tab-btn[data-layout="split-all"]')?.click();
+      }
+      setTimeout(() => {
+        window.__laminaReaderBridge.scrollToAnchor(anchor);
+      }, 50);
+    }
+  }
+});
+
+// Stream Event Dispatcher matching SPEC-05-INTELLIGENCE
+function handleDiagnosticStreamEvent(evt) {
+  if (!evt) return;
+
+  if (evt.type === "token") {
+    accumulatedMarkdown += evt.data.text;
+    streamContent.innerHTML = formatMarkdownToHtml(accumulatedMarkdown);
+    hudStreamOutput.scrollTop = hudStreamOutput.scrollHeight;
+  } else if (evt.type === "tool_call") {
+    hudToolBanner.style.display = "flex";
+    toolBannerText.textContent = `${evt.data.tool_name}: ${evt.data.query}`;
+  } else if (evt.type === "citation") {
+    hudCitationsSection.style.display = "flex";
+    const chip = document.createElement("button");
+    chip.className = "citation-chip";
+    chip.innerHTML = `<strong>[${evt.data.index}]</strong> ${evt.data.title}`;
+    chip.title = `PMID: ${evt.data.pmid} — Click to inspect in Evidence Reader`;
+
+    // Deep link into Literature Reader
+    chip.addEventListener("click", () => {
+      // Map citation index to known anchor
+      const anchorMap = {
+        1: "who-ihc-workup",
+        2: "travis-p40-specificity",
+        3: "molecular-reflex-panel",
+      };
+      const anchor = anchorMap[evt.data.index] || evt.data.pmid;
+      // Switch workspace layout if reader is hidden
+      const activeLayout = document.querySelector(".tab-btn.active")?.dataset.layout;
+      if (activeLayout === "wsi-focus" || activeLayout === "dicom-focus") {
+        document.querySelector('.tab-btn[data-layout="split-all"]')?.click();
+      }
+      window.__laminaReaderBridge.scrollToAnchor(anchor);
+    });
+
+    hudCitationChips.appendChild(chip);
+  } else if (evt.type === "verification") {
+    guardrailStatus.style.display = "block";
+    const scorePct = (evt.data.confidence * 100).toFixed(1);
+    const verText = evt.data.verified ? "Citations Verified" : "Flagged";
+    guardrailText.textContent = `✓ Tier 1 Guardrail (Decision-1): ${scorePct}% Calibrated Confidence (${verText})`;
+  } else if (evt.type === "done") {
+    isStreaming = false;
+    lastInteractionId = evt.data.interaction_id;
+    currentInteractionId = null;
+    streamCursor.style.display = "none";
+    hudToolBanner.style.display = "none";
+    hudCancelBtn.style.display = "none";
+    hudResetBtn.style.display = "inline-block";
+    hudCopyBtn.style.display = "inline-block";
+    hudFollowupForm.style.display = "flex";
+    hudFollowupInput.focus();
+  } else if (evt.type === "error") {
+    isStreaming = false;
+    currentInteractionId = null;
+    streamCursor.style.display = "none";
+    hudToolBanner.style.display = "none";
+    hudCancelBtn.style.display = "none";
+    hudResetBtn.style.display = "inline-block";
+    hudCopyBtn.style.display = "inline-block";
+    if (!accumulatedMarkdown.includes(`[${evt.data.code}]`)) {
+      accumulatedMarkdown += `\n\n*Stream Error [${evt.data.code}]: ${evt.data.message}*`;
+      streamContent.innerHTML = formatMarkdownToHtml(accumulatedMarkdown);
+    }
+  }
+}
+
+// Listen to Tauri stream event
+if (isTauri) {
+  listen("lamina:diagnostic-stream", (event) => {
+    handleDiagnosticStreamEvent(event.payload);
+  });
+}
+
+// Submit Diagnostic Query Stream
+async function submitQueryStream(promptText, isFollowUp = false) {
+  if (!promptText) {
+    alert("Please enter a clinical prompt.");
+    return;
+  }
+
+  // HIPAA Optical Allow-List check: patch strictly <= 1024x1024 if selected
+  const patchB64 = state.wsi.activeRoi
+    ? hudPatchCanvas.toDataURL("image/png").split(",")[1]
+    : null;
+
+  // Append pinned literature context into prompt if active
+  let fullPrompt = promptText;
+  if (state.hud.pinnedExcerpt && state.hud.pinnedExcerpt.text) {
+    const p = state.hud.pinnedExcerpt;
+    const ref = p.pmid_or_doi ? ` (PMID: ${p.pmid_or_doi})` : "";
+    fullPrompt += `\n\n[Pinned Literature Context: ${p.document_title || "Reference"}${ref}]:\n"${p.text}"`;
+  }
+
+  const req = {
+    query_text: fullPrompt,
+    patch_png_base64: patchB64,
+    magnification_mpp: state.wsi.mppX,
+    previous_interaction_id: isFollowUp ? lastInteractionId : null,
+  };
+
+  // UI state transition
+  isStreaming = true;
+  hudQueryForm.style.display = "none";
+  hudStreamPanel.style.display = "flex";
+  hudSubmitBtn.style.display = "none";
+  hudCancelBtn.style.display = "inline-block";
+  hudResetBtn.style.display = "none";
+  hudCopyBtn.style.display = "none";
+  hudFollowupForm.style.display = "none";
+  streamCursor.style.display = "inline-block";
+
+  if (!isFollowUp) {
+    accumulatedMarkdown = "";
+    streamContent.innerHTML = "";
+    hudCitationChips.innerHTML = "";
+    hudCitationsSection.style.display = "none";
+    guardrailStatus.style.display = "none";
+  } else {
+    accumulatedMarkdown += `\n\n---\n\n**Follow-up Inquiry**: *\"${promptText}\"*\n\n`;
+    streamContent.innerHTML = formatMarkdownToHtml(accumulatedMarkdown);
+  }
+
+  try {
+    if (isTauri) {
+      const interactionId = await invoke("submit_diagnostic_query", { request: req });
+      currentInteractionId = interactionId;
+    } else {
+      currentInteractionId = `cds_browser_${Date.now()}`;
+      simulateBrowserCdsStream(fullPrompt, isFollowUp);
+    }
+  } catch (err) {
+    handleDiagnosticStreamEvent({
+      type: "error",
+      data: { code: "INVOKE_FAILED", message: String(err) },
+    });
+  }
+}
+
+// Offline / browser development stream simulation
+function simulateBrowserCdsStream(promptText, isFollowUp) {
+  handleDiagnosticStreamEvent({
+    type: "tool_call",
+    data: {
+      tool_name: "PubMed Grounding Engine",
+      query: `WHO Thoracic 5th Ed IHC algorithm: ${promptText}`,
+    },
+  });
+
+  const tokens = isFollowUp
+    ? [
+        "### Multi-Turn Diagnostic Synthesis\n\n",
+        `Regarding your follow-up inquiry: *\"${promptText}\"*\n\n`,
+        "**Differential Refinement & Tissue Stewardship Analysis**:\n",
+        "In evaluating secondary markers to distinguish poorly differentiated adenocarcinoma from squamous variants, ",
+        "tissue preservation must remain paramount for companion diagnostic molecular testing. ",
+        "If initial TTF-1 and p40 markers yield dual-negative or ambiguous profiles, an expanded reflex panel ",
+        "incorporating **Napsin A** and **CK5/6** is indicated [1, 2].\n\n",
+        "**Molecular Reflex Recommendation**:\n",
+        "All advanced non-small cell lung carcinomas lacking driver mutations should reflexively undergo ",
+        "comprehensive NGS panel testing (EGFR, ALK, ROS1, BRAF, RET, MET, KRAS) and PD-L1 TPS immunohistochemistry [3].\n",
+      ]
+    : [
+        "## Clinical Histopathological Assessment\n\n",
+        "**Microscopic Evaluation (Magnification: 40× | MPP: 0.25 µm/px)**:\n",
+        "Inspection of the optical sub-patch reveals an invasive epithelial proliferation characterized by ",
+        "atypical glandular configurations, irregular cribriform patterns, and cohesive solid nests. ",
+        "Tumor cells exhibit high nuclear-to-cytoplasmic ratio, marked hyperchromasia, irregular chromatin clumping, ",
+        "and prominent macro-nucleoli. Brisk mitotic activity is readily identifiable. ",
+        "Definitive squamous features (intercellular bridges, keratinization pearls) are absent within the analyzed field [1].\n\n",
+        "### Diagnostic Differential Ranking\n",
+        "1. **Pulmonary Invasive Adenocarcinoma (Acinar/Solid Predominant)** — Favored primary diagnosis based on architectural atypia and nuclear morphology [1].\n",
+        "2. **Poorly Differentiated Squamous Cell Carcinoma (Non-Keratinizing)** — Essential differential to exclude in solid architectural variants [1, 2].\n",
+        "3. **Large Cell Neuroendocrine Carcinoma (LCNEC)** — Diagnostic consideration if high mitotic rate (>10/2mm²) and organoid nesting are present [3].\n\n",
+        "### Recommended Diagnostic IHC Panel\n",
+        "In alignment with WHO 5th Edition Thoracic Pathology guidelines, an initial minimal two-marker IHC panel is recommended to conserve tissue for downstream molecular analysis:\n\n",
+        "| Biomarker | Specificity Target | Typical Adeno Profile | Typical Squamous Profile |\n",
+        "| :--- | :--- | :--- | :--- |\n",
+        "| **TTF-1 (8G7G3/1)** | Pulmonary Adenocarcinoma | Strong Diffuse Nuclear (+) | Negative (-) [1, 2] |\n",
+        "| **p40 (ΔNp63)** | Squamous Cell Carcinoma | Negative (-) | Strong Diffuse Nuclear (+) [2] |\n\n",
+        "*Reflex Markers*: If TTF-1 and p40 are discordant or non-reactive, reflex to Napsin A, CK7, and CK5/6.\n\n",
+        "### Companion Molecular Diagnostics\n",
+        "Tissue stewardship mandate: Ensure adequate cellularity (>20% tumor nuclei) for reflex molecular NGS interrogation (EGFR, ALK, ROS1, KRAS G12C, MET ex14, RET, BRAF V600E) and PD-L1 expression [3].\n",
+      ];
+
+  let idx = 0;
+  const interval = setInterval(() => {
+    if (!isStreaming) {
+      clearInterval(interval);
+      return;
+    }
+    if (idx < tokens.length) {
+      handleDiagnosticStreamEvent({ type: "token", data: { text: tokens[idx] } });
+      idx++;
+    } else {
+      clearInterval(interval);
+      handleDiagnosticStreamEvent({
+        type: "citation",
+        data: {
+          index: 1,
+          title: "WHO Classification of Thoracic Tumours (5th Edition, 2021)",
+          pmid: "33906806",
+          url: "https://pubmed.ncbi.nlm.nih.gov/33906806/",
+        },
+      });
+      handleDiagnosticStreamEvent({
+        type: "citation",
+        data: {
+          index: 2,
+          title: "Travis WD, et al. Diagnosis of Lung Cancer in Small Biopsies and Cytology. J Thorac Oncol 2011",
+          pmid: "21317737",
+          url: "https://pubmed.ncbi.nlm.nih.gov/21317737/",
+        },
+      });
+      handleDiagnosticStreamEvent({
+        type: "citation",
+        data: {
+          index: 3,
+          title: "Yatabe Y, et al. Best Practices for Pathologic Diagnosis of NSCLC. J Thorac Oncol 2019",
+          pmid: "30880145",
+          url: "https://pubmed.ncbi.nlm.nih.gov/30880145/",
+        },
+      });
+      handleDiagnosticStreamEvent({
+        type: "verification",
+        data: { confidence: 0.984, verified: true },
+      });
+      handleDiagnosticStreamEvent({
+        type: "done",
+        data: { interaction_id: `cds_browser_${Date.now()}` },
+      });
+    }
+  }, 40);
+}
+
+// Stream Cancellation per SPEC-05 section 6.3
+async function cancelDiagnosticStream() {
+  if (!isStreaming) return;
+  isStreaming = false;
+
+  const idToCancel = currentInteractionId || lastInteractionId;
+
+  if (isTauri) {
+    try {
+      await invoke("cancel_diagnostic_query", { interactionId: idToCancel });
+    } catch (e) {
+      console.warn("Cancel invoke error:", e);
+    }
+  } else {
+    handleDiagnosticStreamEvent({
+      type: "error",
+      data: { code: "CANCELLED", message: "Stream aborted by clinician." },
+    });
+  }
+}
+
+// Reset HUD to Prompt Input
+function resetHudForm() {
+  isStreaming = false;
+  hudStreamPanel.style.display = "none";
+  hudQueryForm.style.display = "flex";
+  hudSubmitBtn.style.display = "inline-block";
+  hudCancelBtn.style.display = "none";
+  hudResetBtn.style.display = "none";
+  hudCopyBtn.style.display = "none";
+  hudFollowupForm.style.display = "none";
+  hudQueryInput.value = "";
+  hudFollowupInput.value = "";
+}
+
+// Action Event Listeners
+hudSubmitBtn.addEventListener("click", () => {
+  submitQueryStream(hudQueryInput.value.trim());
+});
+
+hudCancelBtn.addEventListener("click", () => {
+  cancelDiagnosticStream();
+});
+
+hudResetBtn.addEventListener("click", () => {
+  resetHudForm();
+});
+
+hudFollowupBtn.addEventListener("click", () => {
+  const followUpText = hudFollowupInput.value.trim();
+  if (followUpText) {
+    hudFollowupInput.value = "";
+    submitQueryStream(followUpText, true);
+  }
+});
+
+function fallbackCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
+  hudCopyBtn.textContent = "Copied!";
+  setTimeout(() => {
+    hudCopyBtn.textContent = "Copy Report";
+  }, 1500);
+}
+
+hudCopyBtn.addEventListener("click", () => {
+  const text = streamContent.innerText;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      hudCopyBtn.textContent = "Copied!";
+      setTimeout(() => {
+        hudCopyBtn.textContent = "Copy Report";
+      }, 1500);
+    }).catch(() => {
+      fallbackCopy(text);
+    });
+  } else {
+    fallbackCopy(text);
+  }
+});
+
+// ==========================================
+// 5. COMMAND PALETTE MODAL
 // ==========================================
 
 function togglePalette(forceState) {
@@ -676,6 +1310,14 @@ paletteList.addEventListener("click", async (e) => {
 
   if (action === "toggle_hud") {
     toggleHud();
+  } else if (action === "layout_split") {
+    document.querySelector('.tab-btn[data-layout="split-all"]')?.click();
+  } else if (action === "layout_wsi") {
+    document.querySelector('.tab-btn[data-layout="wsi-focus"]')?.click();
+  } else if (action === "layout_dicom") {
+    document.querySelector('.tab-btn[data-layout="dicom-focus"]')?.click();
+  } else if (action === "layout_reader") {
+    document.querySelector('.tab-btn[data-layout="reader-focus"]')?.click();
   } else if (action === "open_slide") {
     if (isTauri) {
       try {
@@ -746,39 +1388,74 @@ if (isTauri) {
 }
 
 // Workspace Layout Toggling
+const workspaceContainer = document.getElementById("workspaceContainer");
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
 
     const layout = btn.dataset.layout;
-    const wsiP = document.getElementById("wsiPanel");
-    const dicomP = document.getElementById("dicomPanel");
-    const readerP = document.getElementById("readerPanel");
+    workspaceContainer.className = `workspace-container layout-${layout}`;
 
-    if (layout === "wsi-focus") {
-      wsiP.style.display = "flex";
-      wsiP.style.flex = "1";
-      dicomP.style.display = "none";
-      readerP.style.display = "none";
-    } else if (layout === "dicom-focus") {
-      wsiP.style.display = "none";
-      dicomP.style.display = "flex";
-      dicomP.style.flex = "1";
-      readerP.style.display = "none";
-    } else {
-      wsiP.style.display = "flex";
-      wsiP.style.flex = "5";
-      dicomP.style.display = "flex";
-      dicomP.style.flex = "4";
-      readerP.style.display = "flex";
-      readerP.style.flex = "3";
-    }
+    // Recalculate dimensions for viewports
+    setTimeout(() => {
+      resizeWsiCanvas();
+      renderWsi();
+      renderDicomSlice();
+    }, 50);
   });
 });
+
+// Active Viewport Tracking matching SPEC-01-SHELL
+function setActiveViewport(viewportId, kind) {
+  document.querySelectorAll(".workspace-panel").forEach((panel) => {
+    panel.classList.remove("active-focus");
+  });
+  const el = document.getElementById(`${viewportId}Panel`);
+  if (el) el.classList.add("active-focus");
+
+  if (isTauri) {
+    invoke("set_active_viewport", { viewportId, kind }).catch(console.warn);
+  }
+}
+
+document.getElementById("wsiPanel")?.addEventListener("mousedown", () => {
+  setActiveViewport("wsi", "wsi");
+});
+document.getElementById("dicomPanel")?.addEventListener("mousedown", () => {
+  setActiveViewport("dicom", "dicom");
+});
+document.getElementById("readerPanel")?.addEventListener("mousedown", () => {
+  setActiveViewport("reader", "reader");
+});
+
+// Load and populate reader documents from backend
+async function loadReaderDocuments() {
+  if (isTauri) {
+    try {
+      const docs = await invoke("reader_get_documents");
+      if (docs && docs.length > 0 && readerDocSelect) {
+        const existingIds = Array.from(readerDocSelect.options).map((o) => o.value);
+        for (const doc of docs) {
+          if (!existingIds.includes(doc.id)) {
+            const opt = document.createElement("option");
+            opt.value = doc.id;
+            opt.textContent = doc.title;
+            readerDocSelect.appendChild(opt);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load reader documents:", e);
+    }
+  }
+}
 
 // Initialize on page load
 window.addEventListener("DOMContentLoaded", () => {
   initDicom();
   renderWsi();
+  setActiveViewport("wsi", "wsi");
+  loadReaderDocuments();
 });
+

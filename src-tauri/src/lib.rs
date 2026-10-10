@@ -1,8 +1,10 @@
 pub mod commands;
 pub mod dicom;
 pub mod hud;
+pub mod intelligence;
 pub mod privacy;
 pub mod protocol;
+pub mod reader;
 pub mod state;
 pub mod wsi;
 
@@ -42,9 +44,13 @@ pub fn run() {
             get_clinical_presets,
             toggle_quick_query_hud,
             submit_diagnostic_query,
+            cancel_diagnostic_query,
             open_file_dialog,
             set_active_viewport,
             reader_extract_selection,
+            reader_set_selection,
+            reader_clear_selection,
+            reader_get_documents,
             reader_navigate,
             handle_viewport_command,
         ])
@@ -71,4 +77,3 @@ mod tests {
         println!("Option+Space: {:?}", opt);
     }
 }
-

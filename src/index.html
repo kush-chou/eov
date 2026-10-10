@@ -22,9 +22,10 @@
     
     <div class="topbar-center">
       <div class="workspace-tabs">
-        <button class="tab-btn active" data-layout="split-all">Dual View (WSI + DICOM)</button>
+        <button class="tab-btn active" data-layout="split-all">Tri-Panel Workstation (All)</button>
         <button class="tab-btn" data-layout="wsi-focus">Histopathology Focus</button>
         <button class="tab-btn" data-layout="dicom-focus">Radiology Focus</button>
+        <button class="tab-btn" data-layout="reader-focus">Evidence Reader Focus</button>
       </div>
     </div>
 
@@ -39,7 +40,7 @@
   </header>
 
   <!-- Workspace Multi-Panel Layout -->
-  <main class="workspace-container layout-split" id="workspaceContainer">
+  <main class="workspace-container layout-split-all" id="workspaceContainer">
     <!-- Panel 1: WSI Histopathology Viewport -->
     <section class="workspace-panel panel-wsi" id="wsiPanel">
       <div class="panel-header">
@@ -122,21 +123,60 @@
           <span>Evidence &amp; Clinical Reader</span>
         </div>
         <div class="panel-controls">
-          <button class="btn-tool" id="btnExtractSelection">Extract to HUD</button>
+          <select class="preset-select" id="readerDocSelect" title="Select Guideline">
+            <option value="who-thoracic-5th">WHO Thoracic (5th Ed)</option>
+            <option value="travis-small-biopsies-2011">Travis et al. Biopsies (2011)</option>
+            <option value="cap-iaslc-amp-2018">CAP/IASLC Molecular (2018)</option>
+          </select>
+          <button class="btn-tool" id="btnExtractSelection" title="Extract highlighted text into HUD prompt">Extract to HUD</button>
         </div>
       </div>
+      <div class="reader-toolbar">
+        <input type="text" class="reader-search-input" id="readerSearchInput" placeholder="Filter guidelines (e.g. TTF-1, p40, EGFR)..." />
+      </div>
       <div class="panel-content reader-content" id="readerContent">
-        <article class="literature-doc">
+        <!-- Article 1: WHO Thoracic Tumours -->
+        <article class="literature-doc active" id="doc-who-thoracic-5th">
           <h3 class="paper-title">Differential Diagnosis of Adenocarcinoma vs Squamous Cell Carcinoma in Pulmonary Biopsies</h3>
-          <p class="paper-meta">World Health Organization (WHO) Classification of Thoracic Tumours, 5th Edition</p>
-          <div class="paper-body" id="literatureText">
-            <p><strong>Immunohistochemical Workup:</strong> In poorly differentiated non-small cell lung carcinomas lacking clear morphological features of keratinization or gland formation, an initial two-marker IHC panel consisting of <strong>TTF-1</strong> (adenocarcinoma) and <strong>p40</strong> (squamous cell carcinoma) is recommended.</p>
-            <p><strong>Diagnostic Interpretation:</strong></p>
-            <ul>
-              <li><strong>TTF-1 (+) / p40 (-)</strong>: Strongly supports pulmonary adenocarcinoma.</li>
-              <li><strong>TTF-1 (-) / p40 (+)</strong>: Strongly supports squamous cell carcinoma.</li>
-              <li>Dual positivity or negativity warrants extended panel evaluation including Napsin A, CK5/6, and CK7.</li>
-            </ul>
+          <p class="paper-meta">World Health Organization (WHO) Classification of Thoracic Tumours, 5th Edition | PMID: 33906806</p>
+          <div class="paper-body">
+            <section class="evidence-anchor" id="who-ihc-workup">
+              <h4>Diagnostic IHC Algorithm in Small Biopsies</h4>
+              <p>In poorly differentiated non-small cell lung carcinomas lacking clear morphological features of keratinization or gland formation, an initial two-marker IHC panel consisting of <strong>TTF-1</strong> (adenocarcinoma) and <strong>p40</strong> (squamous cell carcinoma) is strongly recommended to conserve tissue.</p>
+              <ul>
+                <li><strong>TTF-1 (+) / p40 (-)</strong>: Strongly supports pulmonary adenocarcinoma (~85% sensitivity).</li>
+                <li><strong>TTF-1 (-) / p40 (+)</strong>: Strongly supports squamous cell carcinoma (~99% specificity).</li>
+                <li><strong>Dual positivity or negativity</strong>: Warrants extended reflex testing including Napsin A, CK5/6, and CK7.</li>
+              </ul>
+            </section>
+            <section class="evidence-anchor" id="who-adeno-patterns">
+              <h4>Histological Patterns and Architectural Grading</h4>
+              <p>Invasive pulmonary adenocarcinoma exhibits architectural heterogeneity with five primary growth patterns: lepidic, acinar, papillary, micropapillary, and solid. The presence of >=20% high-grade patterns (micropapillary or solid) correlates with aggressive clinical course and elevated risk of nodal metastasis.</p>
+            </section>
+          </div>
+        </article>
+
+        <!-- Article 2: Travis et al. 2011 -->
+        <article class="literature-doc" id="doc-travis-small-biopsies-2011" style="display: none;">
+          <h3 class="paper-title">Diagnosis of Lung Cancer in Small Biopsies and Cytology</h3>
+          <p class="paper-meta">Travis WD, et al. Journal of Thoracic Oncology 2011; 6(2):244-285 | PMID: 21317737</p>
+          <div class="paper-body">
+            <section class="evidence-anchor" id="travis-p40-specificity">
+              <h4>Superiority of p40 over p63 in Pulmonary Squamous Diagnosis</h4>
+              <p>p40 (ΔNp63) offers equivalent sensitivity to p63 (~100%) for squamous cell carcinoma while providing dramatically higher specificity (~98% vs ~68%), eliminating false-positive diagnoses frequently observed with polyclonal p63 in adenocarcinomas and large-cell neuroendocrine carcinomas.</p>
+            </section>
+          </div>
+        </article>
+
+        <!-- Article 3: CAP/IASLC/AMP 2018 -->
+        <article class="literature-doc" id="doc-cap-iaslc-amp-2018" style="display: none;">
+          <h3 class="paper-title">Updated Molecular Testing Guideline for Selection of Lung Cancer Patients for TKIs</h3>
+          <p class="paper-meta">Lindeman NI, et al. Arch Pathol Lab Med 2018; 142(3):321-346 | PMID: 29360357</p>
+          <div class="paper-body">
+            <section class="evidence-anchor" id="molecular-reflex-panel">
+              <h4>Comprehensive Biomarker Interrogation &amp; Tissue Stewardship</h4>
+              <p>Routine multiplex molecular testing for <strong>EGFR mutations, ALK rearrangements, ROS1 fusions, and BRAF V600E</strong> is recommended for all advanced stage lung adenocarcinomas. Pathologists must enforce strict tissue stewardship during preliminary morphologic assessment to guarantee cellularity for NGS interrogation and PD-L1 immunohistochemistry.</p>
+            </section>
           </div>
         </article>
       </div>
@@ -166,8 +206,8 @@
           </div>
         </div>
 
-        <!-- Query Form -->
-        <div class="hud-query-form">
+        <!-- Initial Query Form -->
+        <div class="hud-query-form" id="hudQueryForm">
           <label for="hudQueryInput">Clinical Diagnostic Prompt</label>
           <textarea id="hudQueryInput" rows="3" placeholder="Analyze this H&amp;E tissue patch: detail histological differential, recommended IHC panel, and evidence citations..."></textarea>
           
@@ -180,9 +220,42 @@
           <div class="hud-pinned-excerpt" id="hudPinnedExcerpt" style="display: none;">
             <div class="excerpt-header">
               <span>Pinned Literature Evidence</span>
-              <button class="btn-clear-excerpt" id="btnClearExcerpt">&times;</button>
+              <button class="btn-clear-excerpt" id="btnClearExcerpt" title="Remove pinned excerpt">&times;</button>
             </div>
+            <div class="excerpt-source" id="excerptSource"></div>
             <p id="excerptText"></p>
+          </div>
+        </div>
+
+        <!-- Streaming CDS Results View (Active or Completed Stream) -->
+        <div class="hud-stream-panel" id="hudStreamPanel" style="display: none;">
+          <!-- Active Tool Call Banner -->
+          <div class="hud-tool-banner" id="hudToolBanner">
+            <span class="tool-pulse"></span>
+            <span id="toolBannerText">Searching PubMed Grounding Index...</span>
+          </div>
+
+          <!-- Tier 1 Verification Guardrail Badge -->
+          <div class="guardrail-status" id="guardrailStatus" style="display: none;">
+            <span class="guardrail-badge-text" id="guardrailText">✓ Tier 1 Guardrail: 98.4% Confidence (Citations Verified)</span>
+          </div>
+
+          <!-- Stream Output Area -->
+          <div class="hud-stream-output" id="hudStreamOutput">
+            <div id="streamContent" class="stream-markdown-body"></div>
+            <span class="stream-cursor" id="streamCursor">▍</span>
+          </div>
+
+          <!-- Discovered Literature Citations -->
+          <div class="hud-citations-section" id="hudCitationsSection" style="display: none;">
+            <div class="citations-title">Verified Evidence Citations (Click to inspect in Evidence Reader):</div>
+            <div class="hud-citation-chips" id="hudCitationChips"></div>
+          </div>
+
+          <!-- Multi-Turn Follow-Up Query Form -->
+          <div class="hud-followup-form" id="hudFollowupForm" style="display: none;">
+            <input type="text" id="hudFollowupInput" placeholder="Ask a follow-up question (e.g. reflex markers if TTF-1 is negative)..." />
+            <button id="hudFollowupBtn">Submit Turn</button>
           </div>
         </div>
       </div>
@@ -192,7 +265,12 @@
           <span class="guardrail-check">✓</span>
           <span>Optical Allow-List Verified (0 Patient Demographic Tags)</span>
         </div>
-        <button class="hud-submit-btn" id="hudSubmitBtn">Submit Query Stream</button>
+        <div class="hud-actions-group">
+          <button class="hud-cancel-btn" id="hudCancelBtn" style="display: none;">Cancel Stream (Esc)</button>
+          <button class="btn-secondary" id="hudResetBtn" style="display: none;">New Query</button>
+          <button class="btn-secondary" id="hudCopyBtn" style="display: none;">Copy Report</button>
+          <button class="hud-submit-btn" id="hudSubmitBtn">Submit Query Stream</button>
+        </div>
       </div>
     </div>
   </aside>
@@ -213,6 +291,10 @@
         <li data-action="preset_bone">Apply Bone Window (C: 400, W: 1500)</li>
         <li data-action="preset_brain">Apply Brain Window (C: 40, W: 80)</li>
         <li data-action="toggle_hud">Toggle Diagnostic Quick-Query HUD (⌥ Space)</li>
+        <li data-action="layout_split">Switch Layout: Dual View (WSI + DICOM)</li>
+        <li data-action="layout_wsi">Switch Layout: Histopathology Focus</li>
+        <li data-action="layout_dicom">Switch Layout: Radiology Focus</li>
+        <li data-action="layout_reader">Switch Layout: Evidence Reader Focus</li>
       </ul>
     </div>
   </div>

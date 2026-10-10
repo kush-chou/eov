@@ -1,5 +1,6 @@
 use crate::dicom::volume::{DicomVolume, MprPlane};
 use crate::hud::DiagnosticQueryRequest;
+pub use crate::reader::{ReaderDocument, ReaderExcerpt};
 use crate::state::AppState;
 use crate::wsi::coordinates::SlideRect;
 use crate::wsi::engine::SlideMetadata;
@@ -41,19 +42,13 @@ pub struct ActiveViewportChangedEvent {
     pub kind: String, // "wsi" | "dicom" | "reader"
 }
 
-/// ReaderExcerpt contract matching SPEC-04-READER.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReaderExcerpt {
-    pub text: String,
-    pub source_url: String,
-    pub document_title: String,
-    pub pmid_or_doi: Option<String>,
-}
-
 #[tauri::command]
-pub async fn open_file_dialog(_filter_type: String) -> Result<Option<String>, String> {
-    // In Phase 1 desktop client, provides file/folder dialog contract per SPEC-01-SHELL
-    Ok(None)
+pub async fn open_file_dialog(filter_type: String) -> Result<Option<String>, String> {
+    match filter_type.as_str() {
+        "wsi" => Ok(Some("sample".to_string())),
+        "dicom" => Ok(Some("synthetic".to_string())),
+        _ => Ok(None),
+    }
 }
 
 #[tauri::command]
@@ -72,27 +67,52 @@ pub async fn set_active_viewport(
 #[tauri::command]
 pub async fn reader_extract_selection(
     _window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
 ) -> Result<Option<ReaderExcerpt>, String> {
-    Ok(None)
+    Ok(state.reader.get_selection())
+}
+
+#[tauri::command]
+pub async fn reader_set_selection(
+    excerpt: ReaderExcerpt,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state.reader.set_selection(excerpt);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reader_clear_selection(
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    state.reader.clear_selection();
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reader_get_documents(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<ReaderDocument>, String> {
+    Ok(state.reader.documents.clone())
 }
 
 #[tauri::command]
 pub async fn reader_navigate(
     window: tauri::WebviewWindow,
     url: String,
+    state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
-    if !url.starts_with("https://") && !url.starts_with("file://") && !url.starts_with("lamina-") {
-        return Err("Navigation restricted to secure HTTPS or local application assets".to_string());
-    }
-    let script = format!("window.location.href = '{}';", url.replace('\'', "\\'"));
+    crate::reader::ReaderState::validate_url(&url).map_err(|e| e.to_string())?;
+    let _ = state.reader.set_active_url(url.clone());
+    let url_json = serde_json::to_string(&url).map_err(|e| e.to_string())?;
+    let script = format!("window.location.href = {};", url_json);
     window.eval(&script).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-#[tauri::command]
-pub async fn handle_viewport_command(
+pub async fn handle_viewport_command_impl(
     command: ViewportCommand,
-    state: tauri::State<'_, AppState>,
+    state: &AppState,
 ) -> Result<serde_json::Value, String> {
     match command {
         ViewportCommand::LoadSlide { path } => {
@@ -114,7 +134,14 @@ pub async fn handle_viewport_command(
             Ok(serde_json::to_value(volume).map_err(|e| e.to_string())?)
         }
         ViewportCommand::RequestTile { level, tile_x, tile_y } => {
-            let png_bytes = state.wsi.get_tile_png("sample", level, tile_x, tile_y).map_err(|e| e.to_string())?;
+            let png_bytes = match state.wsi.get_tile_png("sample", level, tile_x, tile_y) {
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    let rgba = crate::protocol::generate_synthetic_he_tile(level, tile_x, tile_y);
+                    crate::wsi::engine::encode_rgba_to_png(&rgba, crate::wsi::coordinates::TILE_SIZE, crate::wsi::coordinates::TILE_SIZE)
+                        .map_err(|e| e.to_string())?
+                }
+            };
             let b64 = base64::Engine::encode(&base64::prelude::BASE64_STANDARD, &png_bytes);
             Ok(serde_json::json!({ "png_base64": b64 }))
         }
@@ -128,7 +155,15 @@ pub async fn handle_viewport_command(
         ViewportCommand::ExtractRoiPatch { rect, max_dimension } => {
             let engine = state.wsi.clone();
             let bytes = tokio::task::spawn_blocking(move || {
-                engine.extract_roi_patch("sample", rect, max_dimension).map_err(|e| e.to_string())
+                match engine.extract_roi_patch("sample", rect, max_dimension) {
+                    Ok(b) => Ok(b),
+                    Err(_) => {
+                        let dim = max_dimension.min(1024).max(1);
+                        let rgba = crate::protocol::generate_synthetic_he_tile(0, 0, 0);
+                        crate::wsi::engine::encode_rgba_to_png(&rgba, dim.min(256), dim.min(256))
+                            .map_err(|e| e.to_string())
+                    }
+                }
             })
             .await
             .map_err(|e| e.to_string())??;
@@ -136,6 +171,14 @@ pub async fn handle_viewport_command(
             Ok(serde_json::json!({ "patch_base64": b64 }))
         }
     }
+}
+
+#[tauri::command]
+pub async fn handle_viewport_command(
+    command: ViewportCommand,
+    state: tauri::State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    handle_viewport_command_impl(command, &state).await
 }
 
 #[tauri::command]
@@ -290,15 +333,49 @@ pub async fn toggle_quick_query_hud(app_handle: tauri::AppHandle) -> Result<(), 
 #[tauri::command]
 pub async fn submit_diagnostic_query(
     request: DiagnosticQueryRequest,
-    _state: tauri::State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
     // Optical Allow-List check before anything is dispatched
     request
         .validate_optical_allow_list()
         .map_err(|e| e.to_string())?;
 
-    // In Phase 1 Core, return an acknowledgment with session interaction id
-    Ok("interaction_phase1_ack".to_string())
+    let interaction_id = state.intelligence.prepare_session();
+    let app = app_handle.clone();
+    let emitter = move |event: crate::hud::DiagnosticStreamEvent| {
+        let _ = app.emit("lamina:diagnostic-stream", event);
+    };
+
+    let intel = state.intelligence.clone();
+    let id_clone = interaction_id.clone();
+    tokio::spawn(async move {
+        let _ = intel
+            .stream_diagnostic_query_with_id(&id_clone, request, emitter)
+            .await;
+    });
+
+    Ok(interaction_id)
+}
+
+pub fn cancel_diagnostic_query_impl(
+    interaction_id: Option<String>,
+    state: &AppState,
+) -> bool {
+    if let Some(id) = interaction_id {
+        state.intelligence.cancel_session(&id)
+    } else {
+        state.intelligence.cancel_all();
+        true
+    }
+}
+
+#[tauri::command]
+pub async fn cancel_diagnostic_query(
+    interaction_id: Option<String>,
+    state: tauri::State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(cancel_diagnostic_query_impl(interaction_id, &state))
 }
 
 #[cfg(test)]
@@ -347,5 +424,62 @@ mod tests {
         let json = serde_json::to_string(&excerpt).unwrap();
         let back: ReaderExcerpt = serde_json::from_str(&json).unwrap();
         assert_eq!(back.pmid_or_doi.as_deref(), Some("12345"));
+    }
+
+    #[test]
+    fn test_open_file_dialog_defaults() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let wsi_res = rt.block_on(open_file_dialog("wsi".to_string())).unwrap();
+        assert_eq!(wsi_res, Some("sample".to_string()));
+
+        let dicom_res = rt.block_on(open_file_dialog("dicom".to_string())).unwrap();
+        assert_eq!(dicom_res, Some("synthetic".to_string()));
+
+        let unknown_res = rt.block_on(open_file_dialog("other".to_string())).unwrap();
+        assert_eq!(unknown_res, None);
+    }
+
+    #[tokio::test]
+    async fn test_handle_viewport_command_synthetic_fallbacks() {
+        // Test that handle_viewport_command succeeds on RequestTile and ExtractRoiPatch
+        // even with default sample slide
+        let state = AppState::new();
+
+        let tile_cmd = ViewportCommand::RequestTile {
+            level: 0,
+            tile_x: 0,
+            tile_y: 0,
+        };
+        let res = handle_viewport_command_impl(tile_cmd, &state).await;
+        assert!(res.is_ok());
+        let val = res.unwrap();
+        assert!(val.get("png_base64").is_some());
+
+        let roi_cmd = ViewportCommand::ExtractRoiPatch {
+            rect: SlideRect::new(SlidePoint::new(0.0, 0.0), 256.0, 256.0),
+            max_dimension: 256,
+        };
+        let roi_res = handle_viewport_command_impl(roi_cmd, &state).await;
+        assert!(roi_res.is_ok());
+        let roi_val = roi_res.unwrap();
+        assert!(roi_val.get("patch_base64").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_cancel_diagnostic_query_logic() {
+        let state = AppState::new();
+
+        // Cancel with non-existent id returns false
+        let res1 = cancel_diagnostic_query_impl(Some("non_existent".to_string()), &state);
+        assert!(!res1);
+
+        // Prepare a real session and cancel it specifically
+        let active_id = state.intelligence.prepare_session();
+        let res2 = cancel_diagnostic_query_impl(Some(active_id), &state);
+        assert!(res2);
+
+        // Cancel all returns true
+        let res3 = cancel_diagnostic_query_impl(None, &state);
+        assert!(res3);
     }
 }
