@@ -10,7 +10,7 @@
 
 ## 1. System Topology & Architectural Invariants
 
-Lamina is a local-first clinical workstation providing Whole Slide Image (WSI) histopathology viewing, multi-frame DICOM radiology viewing, reference literature browsing, and real-time clinical diagnostic support.
+Lamina is a native desktop workstation that executes on-device Whole Slide Image (WSI) histopathology and multi-frame DICOM radiology decoding/rendering, paired with cloud-streamed clinical decision support.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
