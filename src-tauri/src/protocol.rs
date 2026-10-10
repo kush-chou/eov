@@ -64,7 +64,7 @@ pub fn register_tile_protocol<R: tauri::Runtime>(builder: tauri::Builder<R>) -> 
             let uri_str = request.uri().to_string();
             let app_handle = ctx.app_handle().clone();
 
-            tokio::task::spawn_blocking(move || {
+            tauri::async_runtime::spawn_blocking(move || {
                 let parsed = parse_tile_uri(&uri_str);
                 let wants_raw = uri_str.contains("format=raw");
 
