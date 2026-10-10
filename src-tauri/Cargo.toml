@@ -1,0 +1,30 @@
+[package]
+name = "lamina"
+version = "0.1.0"
+description = "Lamina Clinical Workstation"
+edition = "2021"
+
+[lib]
+name = "lamina_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", default-features = false }
+
+[dependencies]
+tauri = { version = "2", default-features = false, features = ["wry"] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+openslide-rs = "3.0"
+lru = "0.13"
+dicom = "0.10"
+dicom-core = "0.10"
+dicom-object = "0.10"
+dicom-dictionary-std = "0.10"
+dicom-pixeldata = "0.10"
+image = { version = "0.25", default-features = false, features = ["png"] }
+tokio = { version = "1", features = ["full"] }
+base64 = "0.22"
+thiserror = "2"
+anyhow = "1"

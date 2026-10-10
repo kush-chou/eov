@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lamina Clinical Workstation</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="theme-clinical">
+  <!-- Workstation Topbar / Drag Region -->
+  <header class="workstation-topbar" data-tauri-drag-region>
+    <div class="topbar-left">
+      <div class="brand-logo">
+        <span class="logo-accent">LAMINA</span>
+        <span class="logo-sub">CLINICAL v2.0</span>
+      </div>
+      <div class="status-badge" id="quarantineBadge">
+        <span class="badge-dot"></span>
+        <span class="badge-text">HIPAA IN-MEMORY QUARANTINE: ACTIVE</span>
+      </div>
+    </div>
+    
+    <div class="topbar-center">
+      <div class="workspace-tabs">
+        <button class="tab-btn active" data-layout="split-all">Dual View (WSI + DICOM)</button>
+        <button class="tab-btn" data-layout="wsi-focus">Histopathology Focus</button>
+        <button class="tab-btn" data-layout="dicom-focus">Radiology Focus</button>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <button class="hud-trigger-btn" id="hudTriggerBtn" title="Toggle Quick Query HUD (Option + Space)">
+        <span class="key-shortcut">⌥ Space</span> ROI HUD
+      </button>
+      <button class="palette-trigger-btn" id="cmdPaletteBtn" title="Command Palette (Cmd + Shift + P)">
+        <span class="key-shortcut">⌘⇧P</span> Palette
+      </button>
+    </div>
+  </header>
+
+  <!-- Workspace Multi-Panel Layout -->
+  <main class="workspace-container layout-split" id="workspaceContainer">
+    <!-- Panel 1: WSI Histopathology Viewport -->
+    <section class="workspace-panel panel-wsi" id="wsiPanel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <circle cx="12" cy="12" r="10" stroke-width="2"/>
+            <circle cx="12" cy="12" r="4" stroke-width="2"/>
+            <line x1="4.93" y1="4.93" x2="9.17" y2="9.17" stroke-width="2"/>
+            <line x1="14.83" y1="14.83" x2="19.07" y2="19.07" stroke-width="2"/>
+          </svg>
+          <span>WSI Histopathology Viewport</span>
+          <span class="meta-chip" id="wsiSlideName">Sample Slide (Synthetic H&amp;E)</span>
+        </div>
+        <div class="panel-controls">
+          <span class="hud-stat" id="fpsDisplay">60 FPS</span>
+          <span class="hud-stat" id="wsiZoomDisplay">40.0× (0.25 µm/px)</span>
+          <button class="btn-tool" id="toolSelectRoi" title="Drag ROI Box for Quick Query">ROI Box</button>
+          <button class="btn-tool" id="btnResetWsi">Reset</button>
+        </div>
+      </div>
+      <div class="panel-content canvas-wrapper" id="wsiCanvasWrapper">
+        <canvas id="wsiCanvas"></canvas>
+        <div class="micron-crosshair-hud" id="wsiCoordHud">
+          X: <span id="hudX">0.0</span> µm | Y: <span id="hudY">0.0</span> µm
+        </div>
+        <div class="roi-selection-overlay" id="roiSelectionBox" style="display: none;"></div>
+      </div>
+    </section>
+
+    <!-- Panel 2: Volumetric DICOM Radiology Viewport -->
+    <section class="workspace-panel panel-dicom" id="dicomPanel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/>
+            <line x1="3" y1="9" x2="21" y2="9" stroke-width="2"/>
+            <line x1="9" y1="21" x2="9" y2="9" stroke-width="2"/>
+          </svg>
+          <span>Volumetric Radiology (DICOM)</span>
+          <span class="meta-chip" id="dicomPlaneName">Axial (XY)</span>
+        </div>
+        <div class="panel-controls">
+          <!-- MPR Plane Selector -->
+          <div class="segmented-control" id="mprControl">
+            <button class="seg-btn active" data-plane="axial">Axial</button>
+            <button class="seg-btn" data-plane="coronal">Coronal</button>
+            <button class="seg-btn" data-plane="sagittal">Sagittal</button>
+          </div>
+          <!-- WWWL Presets -->
+          <select class="preset-select" id="wwwlPresetSelect">
+            <option value="soft_tissue">Soft Tissue (C: 40, W: 400)</option>
+            <option value="lung">Lung (C: -600, W: 1500)</option>
+            <option value="bone">Bone (C: 400, W: 1500)</option>
+            <option value="brain">Brain (C: 40, W: 80)</option>
+          </select>
+        </div>
+      </div>
+      <div class="panel-content dicom-view-wrapper" id="dicomViewWrapper">
+        <div class="dicom-canvas-container">
+          <canvas id="dicomCanvas"></canvas>
+          <div class="dicom-hud-overlay">
+            <div id="dicomSliceStat">Slice 8 / 16</div>
+            <div id="dicomWwwlStat">WW: 400 | WL: 40</div>
+          </div>
+        </div>
+        <div class="dicom-slice-scrubber">
+          <input type="range" id="sliceSlider" min="0" max="15" value="8" />
+        </div>
+      </div>
+    </section>
+
+    <!-- Panel 3: Biomedical Literature & Guidance Reader -->
+    <section class="workspace-panel panel-reader" id="readerPanel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <svg class="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" stroke-width="2"/>
+            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" stroke-width="2"/>
+          </svg>
+          <span>Evidence &amp; Clinical Reader</span>
+        </div>
+        <div class="panel-controls">
+          <button class="btn-tool" id="btnExtractSelection">Extract to HUD</button>
+        </div>
+      </div>
+      <div class="panel-content reader-content" id="readerContent">
+        <article class="literature-doc">
+          <h3 class="paper-title">Differential Diagnosis of Adenocarcinoma vs Squamous Cell Carcinoma in Pulmonary Biopsies</h3>
+          <p class="paper-meta">World Health Organization (WHO) Classification of Thoracic Tumours, 5th Edition</p>
+          <div class="paper-body" id="literatureText">
+            <p><strong>Immunohistochemical Workup:</strong> In poorly differentiated non-small cell lung carcinomas lacking clear morphological features of keratinization or gland formation, an initial two-marker IHC panel consisting of <strong>TTF-1</strong> (adenocarcinoma) and <strong>p40</strong> (squamous cell carcinoma) is recommended.</p>
+            <p><strong>Diagnostic Interpretation:</strong></p>
+            <ul>
+              <li><strong>TTF-1 (+) / p40 (-)</strong>: Strongly supports pulmonary adenocarcinoma.</li>
+              <li><strong>TTF-1 (-) / p40 (+)</strong>: Strongly supports squamous cell carcinoma.</li>
+              <li>Dual positivity or negativity warrants extended panel evaluation including Napsin A, CK5/6, and CK7.</li>
+            </ul>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <!-- Diagnostic ROI Quick Query HUD Overlay (Option + Space) -->
+  <aside class="hud-overlay" id="hudOverlay" style="display: none;">
+    <div class="hud-card">
+      <div class="hud-header">
+        <div class="hud-title-wrap">
+          <span class="hud-badge">CDS TIER 2 SYNTHESIS</span>
+          <h2>Diagnostic ROI Quick Query</h2>
+        </div>
+        <button class="hud-close-btn" id="hudCloseBtn">&times;</button>
+      </div>
+
+      <div class="hud-body">
+        <!-- ROI visual patch preview (Strictly <= 1024x1024 RGBA) -->
+        <div class="hud-patch-preview">
+          <div class="preview-title">Visual Tissue Patch (Optical Allow-List Compliant)</div>
+          <div class="preview-box">
+            <canvas id="hudPatchCanvas" width="256" height="256"></canvas>
+            <div class="patch-meta" id="hudPatchMeta">
+              Size: 256×256 px | Mag: 40× (0.25 µm/px) | Zero PHI
+            </div>
+          </div>
+        </div>
+
+        <!-- Query Form -->
+        <div class="hud-query-form">
+          <label for="hudQueryInput">Clinical Diagnostic Prompt</label>
+          <textarea id="hudQueryInput" rows="3" placeholder="Analyze this H&amp;E tissue patch: detail histological differential, recommended IHC panel, and evidence citations..."></textarea>
+          
+          <div class="hud-chips-row">
+            <button class="chip-preset" data-query="Analyze differential diagnosis and architectural atypia.">Differential Diagnosis</button>
+            <button class="chip-preset" data-query="Recommend IHC staining panel (TTF-1, p40, CK7, CK20).">IHC Panel Recommendation</button>
+            <button class="chip-preset" data-query="Assess tumor margins and depth of stromal invasion.">Stromal Invasion</button>
+          </div>
+
+          <div class="hud-pinned-excerpt" id="hudPinnedExcerpt" style="display: none;">
+            <div class="excerpt-header">
+              <span>Pinned Literature Evidence</span>
+              <button class="btn-clear-excerpt" id="btnClearExcerpt">&times;</button>
+            </div>
+            <p id="excerptText"></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="hud-footer">
+        <div class="guardrail-indicator">
+          <span class="guardrail-check">✓</span>
+          <span>Optical Allow-List Verified (0 Patient Demographic Tags)</span>
+        </div>
+        <button class="hud-submit-btn" id="hudSubmitBtn">Submit Query Stream</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Command Palette Modal (Cmd + Shift + P) -->
+  <div class="palette-backdrop" id="paletteBackdrop" style="display: none;">
+    <div class="command-palette">
+      <input type="text" class="palette-input" id="paletteInput" placeholder="Type a clinical command or preset..." autofocus />
+      <ul class="palette-list" id="paletteList">
+        <li data-action="open_slide">Open WSI Slide (.svs, .ndpi, .mrxs, .tif)</li>
+        <li data-action="open_dicom">Open Volumetric DICOM Series Directory</li>
+        <li data-action="load_synthetic_dicom">Load Synthetic Volumetric CT Phantom</li>
+        <li data-action="mpr_axial">Switch DICOM to Axial Plane (XY)</li>
+        <li data-action="mpr_coronal">Switch DICOM to Coronal Plane (XZ)</li>
+        <li data-action="mpr_sagittal">Switch DICOM to Sagittal Plane (YZ)</li>
+        <li data-action="preset_soft_tissue">Apply Soft Tissue Window (C: 40, W: 400)</li>
+        <li data-action="preset_lung">Apply Lung Window (C: -600, W: 1500)</li>
+        <li data-action="preset_bone">Apply Bone Window (C: 400, W: 1500)</li>
+        <li data-action="preset_brain">Apply Brain Window (C: 40, W: 80)</li>
+        <li data-action="toggle_hud">Toggle Diagnostic Quick-Query HUD (⌥ Space)</li>
+      </ul>
+    </div>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
