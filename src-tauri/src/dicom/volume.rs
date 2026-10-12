@@ -86,29 +86,120 @@ impl DicomVolume {
         let mut voxel_data = Vec::with_capacity(total_voxels);
 
         for z in 0..slices {
+            let nz = if slices > 1 {
+                (z as f32 / (slices - 1) as f32) * 2.0 - 1.0
+            } else {
+                0.0
+            };
+
             for y in 0..height {
                 for x in 0..width {
                     // Center coordinates normalized to [-1.0, 1.0]
                     let nx = (x as f32 / width as f32) * 2.0 - 1.0;
                     let ny = (y as f32 / height as f32) * 2.0 - 1.0;
-                    let _nz = (z as f32 / slices as f32) * 2.0 - 1.0;
-                    let r = (nx * nx + ny * ny).sqrt();
 
-                    let hu: f32 = if r > 0.85 {
-                        -1000.0 // Air around patient
-                    } else if r > 0.80 {
-                        400.0 // Bone (skull/rib cage outer shell)
-                    } else if nx < -0.1 && ny < 0.2 && r < 0.7 {
-                        -600.0 // Lung parenchyma (low density)
-                    } else if nx > 0.1 && ny < 0.2 && r < 0.7 {
-                        -600.0 // Contralateral lung
-                    } else if (nx * nx + (ny - 0.3) * (ny - 0.3)).sqrt() < 0.2 {
-                        80.0 // High density organ (liver/heart)
+                    // Elliptical thoracic body contour
+                    let torso_scale_x = 0.82 - nz.abs() * 0.05;
+                    let torso_scale_y = 0.65 - nz.abs() * 0.05;
+                    let torso_r = (nx / torso_scale_x).powi(2) + (ny / torso_scale_y).powi(2);
+
+                    let hu: f32 = if torso_r > 1.0 {
+                        -1000.0 // Outside air
+                    } else if torso_r > 0.93 {
+                        // Subcutaneous fat with skin boundary
+                        if torso_r > 0.98 {
+                            20.0
+                        } else {
+                            -105.0
+                        }
                     } else {
-                        40.0 // Soft tissue baseline
+                        // 1. Rib cage bone cortex
+                        let rib_ring = (torso_r - 0.88).abs();
+                        let rib_segment = ((nx.atan2(ny) * 6.0).sin()).abs();
+                        let is_rib = rib_ring < 0.04 && rib_segment > 0.35;
+
+                        // 2. Spine (vertebral body posterior)
+                        let spine_dist = (nx * nx + (ny - 0.42).powi(2)).sqrt();
+                        let is_spine_body = spine_dist < 0.12;
+                        let is_spinal_canal = (nx * nx + (ny - 0.47).powi(2)).sqrt() < 0.045;
+
+                        // 3. Sternum (anterior)
+                        let is_sternum = (nx * nx + (ny + 0.58).powi(2)).sqrt() < 0.05;
+
+                        if is_spinal_canal {
+                            -15.0 // CSF / spinal canal
+                        } else if is_spine_body {
+                            if spine_dist > 0.09 {
+                                850.0 // Cortical bone
+                            } else {
+                                220.0 // Trabecular bone marrow
+                            }
+                        } else if is_sternum || is_rib {
+                            800.0 // Cortical bone
+                        } else {
+                            // Thoracic cavity contents
+                            // Right Lung: nx in [-0.68, -0.10], ny in [-0.42, 0.32]
+                            let r_lung_dx = (nx + 0.38) / 0.28;
+                            let r_lung_dy = (ny - 0.02) / 0.36;
+                            let r_lung_dist = r_lung_dx * r_lung_dx + r_lung_dy * r_lung_dy;
+
+                            // Left Lung: nx in [0.10, 0.68], ny in [-0.42, 0.32]
+                            let l_lung_dx = (nx - 0.38) / 0.27;
+                            let l_lung_dy = (ny - 0.02) / 0.36;
+                            let l_lung_dist = l_lung_dx * l_lung_dx + l_lung_dy * l_lung_dy;
+
+                            // Central airway (trachea / carina / bronchi)
+                            let trachea_dist = (nx * nx + (ny - 0.18).powi(2)).sqrt();
+                            let is_airway = trachea_dist < 0.06 && nz < 0.2;
+
+                            // Focal diagnostic lesion (Upper Right Lobe Spiculated Mass)
+                            let nodule_dx = nx + 0.32;
+                            let nodule_dy = ny + 0.12;
+                            let nodule_dz = nz + 0.15;
+                            let nodule_dist = (nodule_dx * nodule_dx + nodule_dy * nodule_dy + nodule_dz * nodule_dz).sqrt();
+
+                            if is_airway {
+                                -960.0 // Airway lumen
+                            } else if nodule_dist < 0.075 {
+                                // Clinical diagnostic tumor mass (Adenocarcinoma target nodule: +42 HU)
+                                let spicule = (nodule_dx * 25.0).sin() * (nodule_dy * 25.0).cos() * 8.0;
+                                42.0 + spicule
+                            } else if r_lung_dist < 1.0 {
+                                // Right lung parenchyma (-720 HU) with vascular arborization
+                                let vasc = ((nx * 40.0).sin() * (ny * 40.0).cos() * (nz * 15.0).sin()).abs();
+                                if vasc > 0.88 {
+                                    110.0 // Pulmonary vessel
+                                } else {
+                                    -720.0 + vasc * 60.0
+                                }
+                            } else if l_lung_dist < 1.0 {
+                                // Left lung parenchyma (-700 HU)
+                                let vasc = ((nx * 38.0).cos() * (ny * 38.0).sin() * (nz * 15.0).cos()).abs();
+                                if vasc > 0.88 {
+                                    110.0 // Pulmonary vessel
+                                } else {
+                                    -700.0 + vasc * 60.0
+                                }
+                            } else {
+                                // Mediastinum & chest wall muscle
+                                let heart_dx = (nx - 0.06) / 0.22;
+                                let heart_dy = (ny + 0.08) / 0.24;
+                                let is_heart = (heart_dx * heart_dx + heart_dy * heart_dy) < 1.0;
+
+                                let aorta_dist = ((nx + 0.04).powi(2) + (ny - 0.18).powi(2)).sqrt();
+                                let is_aorta = aorta_dist < 0.07;
+
+                                if is_aorta {
+                                    145.0 // Contrast-enhanced aorta
+                                } else if is_heart {
+                                    65.0 // Myocardium / blood pool
+                                } else {
+                                    42.0 // Chest wall musculature
+                                }
+                            }
+                        }
                     };
 
-                    // Raw pixel with slope=1.0, intercept=0.0
                     voxel_data.push(hu.round() as i16);
                 }
             }
@@ -117,7 +208,7 @@ impl DicomVolume {
         Self {
             series_instance_uid: "1.2.826.0.1.3680043.9.synthetic.phantom.1".to_string(),
             dimensions: [width, height, slices],
-            voxel_spacing: [0.75, 0.75, 2.5], // 0.75mm in-plane, 2.5mm slice thickness
+            voxel_spacing: [0.75, 0.75, 2.5],
             rescale_slope: 1.0,
             rescale_intercept: 0.0,
             default_window: ClinicalPreset::SoftTissue.window(),

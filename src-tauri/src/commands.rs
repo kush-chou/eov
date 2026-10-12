@@ -242,8 +242,8 @@ pub async fn load_synthetic_dicom(
     slices: Option<u32>,
     state: tauri::State<'_, AppState>,
 ) -> Result<DicomVolume, String> {
-    let w = width.unwrap_or(128);
-    let h = height.unwrap_or(128);
+    let w = width.unwrap_or(256);
+    let h = height.unwrap_or(256);
     let s = slices.unwrap_or(32);
 
     let volume = DicomVolume::generate_synthetic(w, h, s);
