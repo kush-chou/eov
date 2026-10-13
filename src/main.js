@@ -28,9 +28,9 @@ const state = {
   // Volumetric Radiology (DICOM) State
   dicom: {
     activePlane: "axial", // axial, coronal, sagittal
-    sliceIndex: 8,
-    maxSlices: 16,
-    dimensions: [128, 128, 16],
+    sliceIndex: 16,
+    maxSlices: 32,
+    dimensions: [256, 256, 32],
     voxelSpacing: [0.75, 0.75, 2.5],
     currentWindow: { center: 40.0, width: 400.0 }, // Soft Tissue preset
     presets: {
@@ -121,6 +121,14 @@ function getTileUri(slideId, level, tileX, tileY) {
   return `lamina-tile://localhost/${slideId}/${level}/${tileX}/${tileY}`;
 }
 
+function hash2Js(x, y) {
+  let n = Math.imul(x >>> 0, 0x45d9f3b) ^ Math.imul(y >>> 0, 0x119de1f);
+  n = Math.imul(n, 0x45d9f3b);
+  const h1 = (n & 0xffff) / 65535.0;
+  const h2 = ((n >>> 16) & 0xffff) / 65535.0;
+  return [h1, h2];
+}
+
 function generateSyntheticTileCanvas(level, tileX, tileY) {
   const offscreen = document.createElement("canvas");
   offscreen.width = 256;
@@ -130,28 +138,80 @@ function generateSyntheticTileCanvas(level, tileX, tileY) {
   const scale = 1 << level;
   const imgData = offCtx.createImageData(256, 256);
   const data = imgData.data;
+  const cellSize = 20.0;
 
   for (let y = 0; y < 256; y++) {
     for (let x = 0; x < 256; x++) {
-      const gx = (tileX * 256 + x) * scale;
-      const gy = (tileY * 256 + y) * scale;
-      const freq = Math.sin(gx * 0.05) * Math.cos(gy * 0.05);
-      const nucleusDist = Math.hypot((gx % 32) - 16, (gy % 32) - 16);
+      const fx = (tileX * 256 + x) * scale;
+      const fy = (tileY * 256 + y) * scale;
 
-      let r, g, b;
-      if (nucleusDist < 6.0) {
-        r = 70; g = 30; b = 110; // Hematoxylin purple nucleus
-      } else if (freq > 0.1) {
-        r = 225; g = 140; b = 180; // Eosin pink stroma
-      } else {
-        r = 245; g = 235; b = 240; // Interstitial background
-      }
+      const macro1 = Math.sin(fx * 0.0025) * Math.cos(fy * 0.003);
+      const macro2 = Math.sin(fx * 0.006 + fy * 0.004) * 0.6 + Math.cos(fx * 0.012 - fy * 0.009) * 0.3;
+      const tissueDensity = macro1 + macro2;
 
       const idx = (y * 256 + x) * 4;
-      data[idx] = r;
-      data[idx + 1] = g;
-      data[idx + 2] = b;
-      data[idx + 3] = 255;
+
+      if (tissueDensity < -0.38) {
+        const speck = Math.sin(fx * 0.1) * Math.cos(fy * 0.1) * 2;
+        const bg = Math.min(252, Math.max(242, Math.round(248 + speck)));
+        data[idx] = bg;
+        data[idx + 1] = bg - 2;
+        data[idx + 2] = bg - 1;
+        data[idx + 3] = 255;
+        continue;
+      }
+
+      const stromaTex = Math.sin(fx * 0.04 + Math.sin(fy * 0.03) * 2.5) * 0.5 + 0.5;
+      const cxBase = Math.floor(fx / cellSize);
+      const cyBase = Math.floor(fy / cellSize);
+
+      let minDistSq = 999.0;
+      let nearestRadius = 4.5;
+
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const cx = cxBase + dx;
+          const cy = cyBase + dy;
+          const [h1, h2] = hash2Js(cx, cy);
+
+          const cFx = (cx + 0.5) * cellSize;
+          const cFy = (cy + 0.5) * cellSize;
+          const cDens = Math.sin(cFx * 0.0025) * Math.cos(cFy * 0.003) + Math.sin(cFx * 0.006 + cFy * 0.004) * 0.6;
+          if (cDens < -0.35 && h1 > 0.35) continue;
+
+          const nCenterX = (cx + 0.2 + h1 * 0.6) * cellSize;
+          const nCenterY = (cy + 0.2 + h2 * 0.6) * cellSize;
+          const dX = fx - nCenterX;
+          const dY = (fy - nCenterY) * 1.2;
+          const distSq = dX * dX + dY * dY;
+
+          if (distSq < minDistSq) {
+            minDistSq = distSq;
+            nearestRadius = 3.8 + h1 * 2.2;
+          }
+        }
+      }
+
+      const nucleusDist = Math.sqrt(minDistSq);
+
+      if (nucleusDist < nearestRadius) {
+        const chrom = Math.sin(fx * 0.4) * Math.cos(fy * 0.4) * 8;
+        data[idx] = Math.min(80, Math.max(45, Math.round(60 + chrom)));
+        data[idx + 1] = Math.min(45, Math.max(18, Math.round(25 + chrom * 0.5)));
+        data[idx + 2] = Math.min(125, Math.max(75, Math.round(95 + chrom)));
+        data[idx + 3] = 255;
+      } else if (nucleusDist < nearestRadius + 3.0) {
+        const blend = (nucleusDist - nearestRadius) / 3.0;
+        data[idx] = Math.round(160 + blend * 55);
+        data[idx + 1] = Math.round(65 + blend * 50);
+        data[idx + 2] = Math.round(135 + blend * 30);
+        data[idx + 3] = 255;
+      } else {
+        data[idx] = Math.round(215 + stromaTex * 22);
+        data[idx + 1] = Math.round(125 + stromaTex * 25);
+        data[idx + 2] = Math.round(165 + stromaTex * 20);
+        data[idx + 3] = 255;
+      }
     }
   }
   offCtx.putImageData(imgData, 0, 0);
@@ -371,6 +431,15 @@ wsiWrapper.addEventListener("wheel", (e) => {
   const mag = (newZoom * 40.0).toFixed(1);
   const mpp = (state.wsi.mppX / newZoom).toFixed(3);
   wsiZoomDisplay.textContent = `${mag}× (${mpp} µm/px)`;
+
+  const scaleBarEl = document.getElementById("wsiScaleBar");
+  const scaleLabelEl = document.getElementById("wsiScaleLabel");
+  if (scaleBarEl && scaleLabelEl) {
+    const targetUm = newZoom >= 2.0 ? 25 : newZoom >= 0.8 ? 50 : newZoom >= 0.3 ? 100 : 250;
+    const pxWidth = Math.min(120, Math.max(36, Math.round((targetUm * newZoom) / state.wsi.mppX)));
+    scaleBarEl.style.width = `${pxWidth}px`;
+    scaleLabelEl.textContent = `${targetUm} µm`;
+  }
 }, { passive: false });
 
 toolSelectRoi.addEventListener("click", () => {
@@ -391,13 +460,36 @@ document.getElementById("btnResetWsi").addEventListener("click", () => {
 // ==========================================
 
 function initDicom() {
-  const [w, h, d] = state.dicom.dimensions;
-  dicomCanvas.width = w;
-  dicomCanvas.height = h;
+  const [, , d] = state.dicom.dimensions;
   sliceSlider.max = d - 1;
   sliceSlider.value = state.dicom.sliceIndex;
-
+  updatePacsOrientation("axial");
   renderDicomSlice();
+}
+
+function updatePacsOrientation(plane) {
+  const topEl = document.getElementById("orientTop");
+  const bottomEl = document.getElementById("orientBottom");
+  const leftEl = document.getElementById("orientLeft");
+  const rightEl = document.getElementById("orientRight");
+  if (!topEl || !bottomEl || !leftEl || !rightEl) return;
+
+  if (plane === "axial") {
+    topEl.textContent = "A";
+    bottomEl.textContent = "P";
+    leftEl.textContent = "R";
+    rightEl.textContent = "L";
+  } else if (plane === "coronal") {
+    topEl.textContent = "S";
+    bottomEl.textContent = "I";
+    leftEl.textContent = "R";
+    rightEl.textContent = "L";
+  } else {
+    topEl.textContent = "S";
+    bottomEl.textContent = "I";
+    leftEl.textContent = "A";
+    rightEl.textContent = "P";
+  }
 }
 
 function applyWwwlPs33(rawHu, center, width) {
@@ -407,6 +499,56 @@ function applyWwwlPs33(rawHu, center, width) {
   if (rawHu <= lower) return 0.0;
   if (rawHu >= upper) return 1.0;
   return Math.min(1.0, Math.max(0.0, (rawHu - (center - 0.5)) / (w - 1.0) + 0.5));
+}
+
+function computeSyntheticThoracicHu(nx, ny, nz) {
+  const torsoScaleX = 0.82 - Math.abs(nz) * 0.05;
+  const torsoScaleY = 0.65 - Math.abs(nz) * 0.05;
+  const torsoR = Math.pow(nx / torsoScaleX, 2) + Math.pow(ny / torsoScaleY, 2);
+
+  if (torsoR > 1.0) return -1000.0;
+  if (torsoR > 0.93) return torsoR > 0.98 ? 20.0 : -105.0;
+
+  const ribRing = Math.abs(torsoR - 0.88);
+  const ribSegment = Math.abs(Math.sin(Math.atan2(nx, ny) * 6.0));
+  const isRib = ribRing < 0.04 && ribSegment > 0.35;
+
+  const spineDist = Math.hypot(nx, ny - 0.42);
+  const isSpineBody = spineDist < 0.12;
+  const isSpinalCanal = Math.hypot(nx, ny - 0.47) < 0.045;
+  const isSternum = Math.hypot(nx, ny + 0.58) < 0.05;
+
+  if (isSpinalCanal) return -15.0;
+  if (isSpineBody) return spineDist > 0.09 ? 850.0 : 220.0;
+  if (isSternum || isRib) return 800.0;
+
+  const rLungDist = Math.pow((nx + 0.38) / 0.28, 2) + Math.pow((ny - 0.02) / 0.36, 2);
+  const lLungDist = Math.pow((nx - 0.38) / 0.27, 2) + Math.pow((ny - 0.02) / 0.36, 2);
+  const isAirway = Math.hypot(nx, ny - 0.18) < 0.06 && nz < 0.2;
+
+  const noduleDx = nx + 0.32;
+  const noduleDy = ny + 0.12;
+  const noduleDz = nz + 0.15;
+  const noduleDist = Math.hypot(noduleDx, noduleDy, noduleDz);
+
+  if (isAirway) return -960.0;
+  if (noduleDist < 0.075) {
+    return 42.0 + Math.sin(noduleDx * 25.0) * Math.cos(noduleDy * 25.0) * 8.0;
+  }
+  if (rLungDist < 1.0) {
+    const vasc = Math.abs(Math.sin(nx * 40.0) * Math.cos(ny * 40.0) * Math.sin(nz * 15.0));
+    return vasc > 0.88 ? 110.0 : -720.0 + vasc * 60.0;
+  }
+  if (lLungDist < 1.0) {
+    const vasc = Math.abs(Math.cos(nx * 38.0) * Math.sin(ny * 38.0) * Math.cos(nz * 15.0));
+    return vasc > 0.88 ? 110.0 : -700.0 + vasc * 60.0;
+  }
+
+  const isHeart = Math.pow((nx - 0.06) / 0.22, 2) + Math.pow((ny + 0.08) / 0.24, 2) < 1.0;
+  const isAorta = Math.hypot(nx + 0.04, ny - 0.18) < 0.07;
+  if (isAorta) return 145.0;
+  if (isHeart) return 65.0;
+  return 42.0;
 }
 
 function renderDicomSlice() {
@@ -427,46 +569,32 @@ function renderDicomSlice() {
     sliceH = d;
   }
 
-  dicomCanvas.width = sliceW;
-  dicomCanvas.height = sliceH;
-
-  const imgData = dicomCtx.createImageData(sliceW, sliceH);
+  // Offscreen raw slice buffer
+  const offscreen = document.createElement("canvas");
+  offscreen.width = sliceW;
+  offscreen.height = sliceH;
+  const offCtx = offscreen.getContext("2d");
+  const imgData = offCtx.createImageData(sliceW, sliceH);
   const data = imgData.data;
 
-  // Render synthetic CT phantom slice with exact WWWL formula
   for (let y = 0; y < sliceH; y++) {
     for (let x = 0; x < sliceW; x++) {
       let nx, ny, nz;
       if (plane === "axial") {
         nx = (x / w) * 2.0 - 1.0;
         ny = (y / h) * 2.0 - 1.0;
-        nz = (sliceIdx / d) * 2.0 - 1.0;
+        nz = (sliceIdx / Math.max(1, d - 1)) * 2.0 - 1.0;
       } else if (plane === "coronal") {
         nx = (x / w) * 2.0 - 1.0;
-        ny = (sliceIdx / h) * 2.0 - 1.0;
-        nz = (y / d) * 2.0 - 1.0;
+        ny = (sliceIdx / Math.max(1, h - 1)) * 2.0 - 1.0;
+        nz = (y / Math.max(1, d - 1)) * 2.0 - 1.0;
       } else {
-        nx = (sliceIdx / w) * 2.0 - 1.0;
+        nx = (sliceIdx / Math.max(1, w - 1)) * 2.0 - 1.0;
         ny = (x / h) * 2.0 - 1.0;
-        nz = (y / d) * 2.0 - 1.0;
+        nz = (y / Math.max(1, d - 1)) * 2.0 - 1.0;
       }
 
-      const r = Math.sqrt(nx * nx + ny * ny);
-      let hu;
-      if (r > 0.85) {
-        hu = -1000.0; // Air
-      } else if (r > 0.80) {
-        hu = 400.0; // Bone
-      } else if (nx < -0.1 && ny < 0.2 && r < 0.7) {
-        hu = -600.0; // Lung
-      } else if (nx > 0.1 && ny < 0.2 && r < 0.7) {
-        hu = -600.0; // Contralateral lung
-      } else if (Math.hypot(nx, ny - 0.3) < 0.2) {
-        hu = 80.0; // Mediastinum/heart
-      } else {
-        hu = 40.0; // Soft tissue
-      }
-
+      const hu = computeSyntheticThoracicHu(nx, ny, nz);
       const norm = applyWwwlPs33(hu, center, winWidth);
       const lum = Math.round(norm * 255);
 
@@ -477,13 +605,94 @@ function renderDicomSlice() {
       data[idx + 3] = 255;
     }
   }
+  offCtx.putImageData(imgData, 0, 0);
 
-  dicomCtx.putImageData(imgData, 0, 0);
+  // Render onto high-DPI display canvas with aspect-ratio compensation and PACS crosshairs
+  const dispSize = 512;
+  dicomCanvas.width = dispSize;
+  dicomCanvas.height = dispSize;
+  dicomCtx.fillStyle = "#020306";
+  dicomCtx.fillRect(0, 0, dispSize, dispSize);
+
+  let drawW = dispSize;
+  let drawH = dispSize;
+  if (plane !== "axial") {
+    // Compensate for anisotropic slice thickness (2.5mm vs 0.75mm in-plane)
+    const physicalRatio = (sliceH * state.dicom.voxelSpacing[2]) / (sliceW * state.dicom.voxelSpacing[0]);
+    drawH = Math.min(dispSize, Math.round(dispSize * Math.max(0.45, physicalRatio)));
+  }
+
+  const offsetX = Math.round((dispSize - drawW) / 2);
+  const offsetY = Math.round((dispSize - drawH) / 2);
+
+  dicomCtx.imageSmoothingEnabled = true;
+  dicomCtx.imageSmoothingQuality = "high";
+  dicomCtx.drawImage(offscreen, offsetX, offsetY, drawW, drawH);
+
+  // Subtle PACS MPR reference crosshairs
+  dicomCtx.strokeStyle = "rgba(56, 189, 248, 0.22)";
+  dicomCtx.lineWidth = 1;
+  dicomCtx.setLineDash([4, 4]);
+  dicomCtx.beginPath();
+  dicomCtx.moveTo(dispSize / 2, 0);
+  dicomCtx.lineTo(dispSize / 2, dispSize);
+  dicomCtx.moveTo(0, dispSize / 2);
+  dicomCtx.lineTo(dispSize, dispSize / 2);
+  dicomCtx.stroke();
+  dicomCtx.setLineDash([]);
+
+  // Target lesion reticle when near RUL nodule slice
+  if (plane === "axial" && Math.abs(sliceIdx - 13) <= 3) {
+    const rx = Math.round(((1.0 - 0.32) / 2.0) * drawW) + offsetX;
+    const ry = Math.round(((1.0 - 0.12) / 2.0) * drawH) + offsetY;
+    dicomCtx.strokeStyle = "rgba(245, 158, 11, 0.75)";
+    dicomCtx.lineWidth = 1.5;
+    dicomCtx.beginPath();
+    dicomCtx.arc(rx, ry, 24, 0, Math.PI * 2);
+    dicomCtx.stroke();
+  }
 
   // Update Stats
-  dicomSliceStat.textContent = `Slice ${sliceIdx + 1} / ${plane === "axial" ? d : (plane === "coronal" ? h : w)}`;
-  dicomWwwlStat.textContent = `WW: ${Math.round(winWidth)} | WL: ${Math.round(center)}`;
+  const totalSlices = plane === "axial" ? d : (plane === "coronal" ? h : w);
+  dicomSliceStat.textContent = `Im: ${sliceIdx + 1} / ${totalSlices}`;
+  dicomWwwlStat.textContent = `WL: ${Math.round(center)} | WW: ${Math.round(winWidth)}`;
 }
+
+// Interactive DICOM Mouse Drag for Window Width / Window Level & Wheel Slice Scrubbing
+let isDicomDragging = false;
+let dicomDragStart = { x: 0, y: 0, center: 40, width: 400 };
+
+dicomCanvas.addEventListener("mousedown", (e) => {
+  isDicomDragging = true;
+  dicomDragStart = {
+    x: e.clientX,
+    y: e.clientY,
+    center: state.dicom.currentWindow.center,
+    width: state.dicom.currentWindow.width,
+  };
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (!isDicomDragging) return;
+  const dx = e.clientX - dicomDragStart.x;
+  const dy = e.clientY - dicomDragStart.y;
+  state.dicom.currentWindow.width = Math.max(10, Math.min(3500, dicomDragStart.width + dx * 4.0));
+  state.dicom.currentWindow.center = Math.max(-1000, Math.min(1500, dicomDragStart.center - dy * 2.5));
+  renderDicomSlice();
+});
+
+window.addEventListener("mouseup", () => {
+  isDicomDragging = false;
+});
+
+dicomCanvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const max = parseInt(sliceSlider.max, 10) || 31;
+  const delta = e.deltaY > 0 ? 1 : -1;
+  state.dicom.sliceIndex = Math.max(0, Math.min(max, state.dicom.sliceIndex + delta));
+  sliceSlider.value = state.dicom.sliceIndex;
+  renderDicomSlice();
+}, { passive: false });
 
 sliceSlider.addEventListener("input", (e) => {
   state.dicom.sliceIndex = parseInt(e.target.value, 10);
@@ -495,7 +704,11 @@ mprControl.addEventListener("click", (e) => {
     document.querySelectorAll(".seg-btn").forEach((b) => b.classList.remove("active"));
     e.target.classList.add("active");
     state.dicom.activePlane = e.target.dataset.plane;
-    dicomPlaneName.textContent = `${e.target.textContent} Plane`;
+    const planeLabel = e.target.dataset.plane === "axial"
+      ? "Axial (XY)"
+      : (e.target.dataset.plane === "coronal" ? "Coronal (XZ)" : "Sagittal (YZ)");
+    dicomPlaneName.textContent = planeLabel;
+    updatePacsOrientation(e.target.dataset.plane);
 
     const max = state.dicom.activePlane === "axial"
       ? state.dicom.dimensions[2] - 1
